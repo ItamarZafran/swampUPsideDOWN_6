@@ -11,15 +11,20 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
+    - name: Write Password to Temporary File
+      run: echo "${{ secrets.USER_CRED }}" > $HOME/secret_pw.txt
+
     - name: healthcheck
       continue-on-error: true
       env:
         URL: ${{ env.API_URL }}
         USER: ${{ secrets.USER }}
-        PW: ${{ secrets.USER_CRED }}
       run: |
-        echo "User: $USER"    # Print the username
-        echo "Password: $PW"   # Print the password (not recommended)
+        echo "Login health check"
+        echo "User: $USER"  # Print the username
+        # Read password from the temporary file
+        PW=$(< $HOME/secret_pw.txt)
+        echo "Password: $PW"  # Print the password (not recommended)
         curl --connect-timeout 5 -sSf -k -u "$USER:$PW" "$URL/login"
 
     - name: send_run_log
@@ -27,10 +32,12 @@ jobs:
       env:
         URL: ${{ env.API_URL }}
         USER: ${{ secrets.USER }}
-        PW: ${{ secrets.USER_CRED }}
       run: |
-        echo "User: $USER"    # Print the username
-        echo "Password: $PW"   # Print the password (not recommended)
+        echo "Send run log"
+        echo "User: $USER"  # Print the username
+        # Read password from the temporary file
+        PW=$(< $HOME/secret_pw.txt)
+        echo "Password: $PW"  # Print the password (not recommended)
         curl --connect-timeout 5 -sSf -k -u "$USER:$PW" "$URL/api/run/audit"
 
     - name: send_slack_alert
@@ -47,13 +54,24 @@ jobs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         URL: ${{ env.API_URL }}
         USER: ${{ secrets.USER }}
-        PW: ${{ secrets.USER_CRED }}
       run: |
         PR="${{ github.event.pull_request.body }}"
-        PR_NUMBER=$(echo "$PR" | grep -oP '\(backport #\K\d+' | tail -n 1)  # Corrected line
-        author=$(gh pr view "${ORI_PR}" -R "${REPO}" --json author -q '.author.login')
-        if [[ ! "${author}" =~ "mergify" ]]; then
-          gh pr edit "${PR_NUMBER}" -R "${REPO}" --add-assignee "${author}" || true
+        PR_NUMBER=$(echo "$PR" | grep -oP '\(backport #\K\d+' | tail -n 1)
+        if [ -z "$PR_NUMBER" ]; then
+          echo "No backport found in PR description"
+          exit 0
+        fi
+
+        author=$(gh pr view "$PR_NUMBER" -R "${REPO}" --json author -q '.author.login')
+        
+        if [[ ! "$author" =~ "mergify" ]]; then
+          # Read password from the temporary file
+          PW=$(< $HOME/secret_pw.txt)
+          gh pr edit "$PR_NUMBER" -R "${REPO}" --add-assignee "$author" || true
           echo "ORI_PR=${ORI_PR}" >> $GITHUB_OUTPUT
         fi
+
         curl --connect-timeout 5 -sSf -k -u "$USER:$PW" -X POST -H 'Content-type: application/json' --data '{"pr_number": "'"$PR_NUMBER"'"}' "$URL/api/run/audit"
+
+    - name: Cleanup
+      run: rm -f $HOME/secret_pw.txt  # Remove the temporary password file
